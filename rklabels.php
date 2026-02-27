@@ -411,6 +411,16 @@ class RkLabels extends Module
     }
 
     /**
+     * Hook: Order status update (for future use - tracking, notifications, etc.)
+     */
+    public function hookActionOrderStatusUpdate($params)
+    {
+        // Reserved for future functionality
+        // Could be used to trigger actions when order status changes
+        return true;
+    }
+
+    /**
      * Hook: Display button in order detail page
      */
     public function hookDisplayAdminOrderMain($params)
