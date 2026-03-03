@@ -3,6 +3,10 @@
  * Admin Controller for Ruckclean Shipping Labels
  */
 
+require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLocker.php';
+require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerAssignment.php';
+require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerLog.php';
+
 class AdminRkLabelsController extends ModuleAdminController
 {
     public function __construct()
@@ -14,7 +18,7 @@ class AdminRkLabelsController extends ModuleAdminController
         
         parent::__construct();
         
-        $this->toolbar_title = $this->l('Shipping Labels');
+        $this->toolbar_title = $this->l('Etiquetas de Envío');
     }
 
     public function initContent()
@@ -33,10 +37,157 @@ class AdminRkLabelsController extends ModuleAdminController
             case 'api':
                 $this->processApi();
                 break;
+            // Locker actions from order detail page
+            case 'assignLocker':
+                $this->processAssignLocker();
+                break;
+            case 'markReady':
+                $this->processMarkReady();
+                break;
+            case 'markCollected':
+                $this->processMarkCollected();
+                break;
+            case 'cancelLocker':
+                $this->processCancelLocker();
+                break;
             default:
                 $this->renderPendingOrders();
                 break;
         }
+    }
+
+    /**
+     * Assign locker to order and redirect back
+     */
+    protected function processAssignLocker()
+    {
+        $orderId = (int) Tools::getValue('id_order');
+        
+        if (!$orderId) {
+            $this->errors[] = $this->l('No order specified');
+            return;
+        }
+        
+        $assignment = RkLockerAssignment::assignToOrder($orderId);
+        
+        if ($assignment) {
+            $locker = new RkLocker($assignment->id_locker);
+            $this->confirmations[] = sprintf(
+                $this->l('Locker "%s" asignado correctamente'),
+                $locker->name
+            );
+        } else {
+            $this->errors[] = $this->l('No hay lockers disponibles');
+        }
+        
+        // Redirect back to order
+        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+    }
+
+    /**
+     * Mark locker as ready for pickup
+     */
+    protected function processMarkReady()
+    {
+        $orderId = (int) Tools::getValue('id_order');
+        
+        if (!$orderId) {
+            $this->errors[] = $this->l('No order specified');
+            return;
+        }
+        
+        $assignment = RkLockerAssignment::getByOrderId($orderId);
+        
+        if (!$assignment) {
+            $this->errors[] = $this->l('No hay locker asignado a este pedido');
+            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+            return;
+        }
+        
+        // Generate random PIN (6 digits)
+        $pin = sprintf('%06d', mt_rand(0, 999999));
+        $validHours = (int) Configuration::get('RKLABELS_PIN_VALID_HOURS') ?: 72;
+        
+        if ($assignment->markReady($pin, $validHours)) {
+            $this->confirmations[] = sprintf(
+                $this->l('Locker marcado como listo. PIN: %s'),
+                $pin
+            );
+        } else {
+            $this->errors[] = $this->l('Error al actualizar el locker');
+        }
+        
+        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+    }
+
+    /**
+     * Mark locker as collected
+     */
+    protected function processMarkCollected()
+    {
+        $orderId = (int) Tools::getValue('id_order');
+        
+        if (!$orderId) {
+            $this->errors[] = $this->l('No order specified');
+            return;
+        }
+        
+        $assignment = RkLockerAssignment::getByOrderId($orderId);
+        
+        if (!$assignment) {
+            $this->errors[] = $this->l('No hay locker asignado a este pedido');
+            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+            return;
+        }
+        
+        if ($assignment->markCollected()) {
+            // Optionally update order status
+            $collectedStatus = (int) Configuration::get('RKLABELS_STATUS_COLLECTED');
+            if ($collectedStatus) {
+                $order = new Order($orderId);
+                if ($order->current_state != $collectedStatus) {
+                    $history = new OrderHistory();
+                    $history->id_order = $order->id;
+                    $history->changeIdOrderState($collectedStatus, $order, true);
+                    $history->addWithemail(true);
+                }
+            }
+            
+            $this->confirmations[] = $this->l('Locker marcado como recogido');
+        } else {
+            $this->errors[] = $this->l('Error al actualizar el locker');
+        }
+        
+        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+    }
+
+    /**
+     * Cancel locker assignment
+     */
+    protected function processCancelLocker()
+    {
+        $orderId = (int) Tools::getValue('id_order');
+        
+        if (!$orderId) {
+            $this->errors[] = $this->l('No order specified');
+            return;
+        }
+        
+        $assignment = RkLockerAssignment::getByOrderId($orderId);
+        
+        if (!$assignment) {
+            $this->errors[] = $this->l('No hay locker asignado a este pedido');
+            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
+            return;
+        }
+        
+        if ($assignment->cancel('Cancelado manualmente desde pedido')) {
+            $this->confirmations[] = $this->l('Asignación de locker cancelada');
+        } else {
+            $this->errors[] = $this->l('Error al cancelar el locker');
+        }
+        
+        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
     }
 
     /**
