@@ -3,10 +3,6 @@
  * Admin Controller for Ruckclean Shipping Labels
  */
 
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLocker.php';
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerAssignment.php';
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerLog.php';
-
 class AdminRkLabelsController extends ModuleAdminController
 {
     public function __construct()
@@ -34,22 +30,6 @@ class AdminRkLabelsController extends ModuleAdminController
             case 'batchPrint':
                 $this->processBatchPrint();
                 break;
-            case 'api':
-                $this->processApi();
-                break;
-            // Locker actions from order detail page
-            case 'assignLocker':
-                $this->processAssignLocker();
-                break;
-            case 'markReady':
-                $this->processMarkReady();
-                break;
-            case 'markCollected':
-                $this->processMarkCollected();
-                break;
-            case 'cancelLocker':
-                $this->processCancelLocker();
-                break;
             default:
                 $this->renderPendingOrders();
                 break;
@@ -57,145 +37,10 @@ class AdminRkLabelsController extends ModuleAdminController
     }
 
     /**
-     * Assign locker to order and redirect back
-     */
-    protected function processAssignLocker()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            $this->errors[] = $this->l('No order specified');
-            return;
-        }
-        
-        $assignment = RkLockerAssignment::assignToOrder($orderId);
-        
-        if ($assignment) {
-            $locker = new RkLocker($assignment->id_locker);
-            $this->confirmations[] = sprintf(
-                $this->l('Locker "%s" asignado correctamente'),
-                $locker->name
-            );
-        } else {
-            $this->errors[] = $this->l('No hay lockers disponibles');
-        }
-        
-        // Redirect back to order
-        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-    }
-
-    /**
-     * Mark locker as ready for pickup
-     */
-    protected function processMarkReady()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            $this->errors[] = $this->l('No order specified');
-            return;
-        }
-        
-        $assignment = RkLockerAssignment::getByOrderId($orderId);
-        
-        if (!$assignment) {
-            $this->errors[] = $this->l('No hay locker asignado a este pedido');
-            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-            return;
-        }
-        
-        // Generate random PIN (6 digits)
-        $pin = sprintf('%06d', mt_rand(0, 999999));
-        $validHours = (int) Configuration::get('RKLABELS_PIN_VALID_HOURS') ?: 72;
-        
-        if ($assignment->markReady($pin, $validHours)) {
-            $this->confirmations[] = sprintf(
-                $this->l('Locker marcado como listo. PIN: %s'),
-                $pin
-            );
-        } else {
-            $this->errors[] = $this->l('Error al actualizar el locker');
-        }
-        
-        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-    }
-
-    /**
-     * Mark locker as collected
-     */
-    protected function processMarkCollected()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            $this->errors[] = $this->l('No order specified');
-            return;
-        }
-        
-        $assignment = RkLockerAssignment::getByOrderId($orderId);
-        
-        if (!$assignment) {
-            $this->errors[] = $this->l('No hay locker asignado a este pedido');
-            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-            return;
-        }
-        
-        if ($assignment->markCollected()) {
-            // Optionally update order status
-            $collectedStatus = (int) Configuration::get('RKLABELS_STATUS_COLLECTED');
-            if ($collectedStatus) {
-                $order = new Order($orderId);
-                if ($order->current_state != $collectedStatus) {
-                    $history = new OrderHistory();
-                    $history->id_order = $order->id;
-                    $history->changeIdOrderState($collectedStatus, $order, true);
-                    $history->addWithemail(true);
-                }
-            }
-            
-            $this->confirmations[] = $this->l('Locker marcado como recogido');
-        } else {
-            $this->errors[] = $this->l('Error al actualizar el locker');
-        }
-        
-        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-    }
-
-    /**
-     * Cancel locker assignment
-     */
-    protected function processCancelLocker()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            $this->errors[] = $this->l('No order specified');
-            return;
-        }
-        
-        $assignment = RkLockerAssignment::getByOrderId($orderId);
-        
-        if (!$assignment) {
-            $this->errors[] = $this->l('No hay locker asignado a este pedido');
-            Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-            return;
-        }
-        
-        if ($assignment->cancel('Cancelado manualmente desde pedido')) {
-            $this->confirmations[] = $this->l('Asignación de locker cancelada');
-        } else {
-            $this->errors[] = $this->l('Error al cancelar el locker');
-        }
-        
-        Tools::redirectAdmin($this->context->link->getAdminLink('AdminOrders') . '&id_order=' . $orderId . '&vieworder');
-    }
-
-    /**
      * Render list of orders pending label printing
      */
     protected function renderPendingOrders()
     {
-        // Get orders that are paid but not yet shipped
         $sql = '
             SELECT o.id_order, o.reference, o.date_add, 
                    c.firstname, c.lastname, c.email,
@@ -231,13 +76,13 @@ class AdminRkLabelsController extends ModuleAdminController
         $orderId = (int) Tools::getValue('id_order');
         
         if (!$orderId) {
-            $this->errors[] = $this->l('No order specified');
+            $this->errors[] = $this->l('No se especificó pedido');
             return;
         }
         
         $order = new Order($orderId);
         if (!Validate::isLoadedObject($order)) {
-            $this->errors[] = $this->l('Order not found');
+            $this->errors[] = $this->l('Pedido no encontrado');
             return;
         }
         
@@ -254,10 +99,8 @@ class AdminRkLabelsController extends ModuleAdminController
             }
         }
         
-        // Log the print
         $this->logPrint($orderId);
         
-        // Return based on printer type
         $printerType = Configuration::get('RKLABELS_PRINTER_TYPE');
         
         switch ($printerType) {
@@ -283,7 +126,6 @@ class AdminRkLabelsController extends ModuleAdminController
         $orderIds = Tools::getValue('orderBox', []);
         
         if (empty($orderIds)) {
-            // Get from URL if passed
             $ids = Tools::getValue('ids');
             if ($ids) {
                 $orderIds = explode(',', $ids);
@@ -291,7 +133,7 @@ class AdminRkLabelsController extends ModuleAdminController
         }
         
         if (empty($orderIds)) {
-            $this->errors[] = $this->l('No orders selected');
+            $this->errors[] = $this->l('No hay pedidos seleccionados');
             $this->renderPendingOrders();
             return;
         }
@@ -302,7 +144,6 @@ class AdminRkLabelsController extends ModuleAdminController
             if (Validate::isLoadedObject($order)) {
                 $labels[] = $this->generateLabel($order);
                 
-                // Update status
                 if (Configuration::get('RKLABELS_AUTO_STATUS')) {
                     $newStatus = (int) Configuration::get('RKLABELS_STATUS_SHIPPED');
                     if ($newStatus && $order->current_state != $newStatus) {
@@ -318,71 +159,6 @@ class AdminRkLabelsController extends ModuleAdminController
         }
         
         $this->outputBatchPDF($labels);
-    }
-
-    /**
-     * API endpoint for external access (batch operations)
-     */
-    protected function processApi()
-    {
-        header('Content-Type: application/json');
-        
-        $apiKey = Tools::getValue('api_key');
-        $storedKey = Configuration::get('RKLABELS_API_KEY');
-        
-        if ($apiKey !== $storedKey) {
-            die(json_encode(['error' => 'Invalid API key']));
-        }
-        
-        $apiAction = Tools::getValue('api_action');
-        
-        switch ($apiAction) {
-            case 'pending':
-                // Get pending orders
-                $orders = $this->getPendingOrders();
-                die(json_encode(['success' => true, 'orders' => $orders]));
-                
-            case 'print':
-                // Print specific orders
-                $ids = Tools::getValue('ids');
-                $orderIds = explode(',', $ids);
-                $results = [];
-                
-                foreach ($orderIds as $orderId) {
-                    $order = new Order((int) $orderId);
-                    if (Validate::isLoadedObject($order)) {
-                        $label = $this->generateLabel($order);
-                        
-                        if (Configuration::get('RKLABELS_AUTO_STATUS')) {
-                            $newStatus = (int) Configuration::get('RKLABELS_STATUS_SHIPPED');
-                            if ($newStatus) {
-                                $history = new OrderHistory();
-                                $history->id_order = $order->id;
-                                $history->changeIdOrderState($newStatus, $order, true);
-                                $history->addWithemail(true);
-                            }
-                        }
-                        
-                        $this->logPrint($orderId);
-                        $results[] = ['id' => $orderId, 'status' => 'printed', 'label' => $label];
-                    } else {
-                        $results[] = ['id' => $orderId, 'status' => 'error', 'message' => 'Order not found'];
-                    }
-                }
-                
-                die(json_encode(['success' => true, 'results' => $results]));
-                
-            case 'status':
-                // Get module status
-                die(json_encode([
-                    'success' => true,
-                    'version' => '1.0.0',
-                    'pending_count' => count($this->getPendingOrders()),
-                ]));
-                
-            default:
-                die(json_encode(['error' => 'Unknown action']));
-        }
     }
 
     /**
@@ -412,7 +188,6 @@ class AdminRkLabelsController extends ModuleAdminController
             ],
         ];
         
-        // Add sender if configured
         if (Configuration::get('RKLABELS_SHOW_SENDER')) {
             $label['sender'] = [
                 'name' => Configuration::get('RKLABELS_SENDER_NAME'),
@@ -426,32 +201,12 @@ class AdminRkLabelsController extends ModuleAdminController
     }
 
     /**
-     * Get list of pending orders
-     */
-    protected function getPendingOrders()
-    {
-        $sql = '
-            SELECT o.id_order, o.reference, o.date_add,
-                   CONCAT(a.firstname, " ", a.lastname) as recipient_name,
-                   a.address1, a.postcode, a.city
-            FROM ' . _DB_PREFIX_ . 'orders o
-            LEFT JOIN ' . _DB_PREFIX_ . 'address a ON o.id_address_delivery = a.id_address
-            WHERE o.current_state IN (2, 3, 10, 11)
-            ORDER BY o.date_add DESC
-            LIMIT 100
-        ';
-        
-        return Db::getInstance()->executeS($sql);
-    }
-
-    /**
      * Log print action
      */
     protected function logPrint($orderId)
     {
-        // Could be extended to log to database
         PrestaShopLogger::addLog(
-            'Label printed for order #' . $orderId,
+            'Etiqueta impresa para pedido #' . $orderId,
             1,
             null,
             'Order',
@@ -473,7 +228,7 @@ class AdminRkLabelsController extends ModuleAdminController
         
         $pdf = new RkLabelPDF($width, $height, $fontSize);
         $pdf->generateLabel($label);
-        $pdf->output('label_' . $label['order_reference'] . '.pdf');
+        $pdf->output('etiqueta_' . $label['order_reference'] . '.pdf');
         exit;
     }
 
@@ -490,7 +245,7 @@ class AdminRkLabelsController extends ModuleAdminController
         
         $pdf = new RkLabelPDF($width, $height, $fontSize);
         $pdf->generateBatchLabels($labels);
-        $pdf->output('labels_batch_' . date('Y-m-d_His') . '.pdf');
+        $pdf->output('etiquetas_lote_' . date('Y-m-d_His') . '.pdf');
         exit;
     }
 
@@ -505,7 +260,7 @@ class AdminRkLabelsController extends ModuleAdminController
         $data = $escpos->generateLabel($label);
         
         header('Content-Type: application/octet-stream');
-        header('Content-Disposition: attachment; filename="label_' . $label['order_reference'] . '.bin"');
+        header('Content-Disposition: attachment; filename="etiqueta_' . $label['order_reference'] . '.bin"');
         echo $data;
         exit;
     }
@@ -524,7 +279,7 @@ class AdminRkLabelsController extends ModuleAdminController
         $data = $zpl->generateLabel($label);
         
         header('Content-Type: text/plain');
-        header('Content-Disposition: attachment; filename="label_' . $label['order_reference'] . '.zpl"');
+        header('Content-Disposition: attachment; filename="etiqueta_' . $label['order_reference'] . '.zpl"');
         echo $data;
         exit;
     }

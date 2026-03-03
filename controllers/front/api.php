@@ -1,12 +1,8 @@
 <?php
 /**
- * Public API Controller for Ruckclean Shipping Labels & Lockers
+ * Public API Controller for Ruckclean Shipping Labels
  * Accessible without admin authentication, uses API key
  */
-
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLocker.php';
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerAssignment.php';
-require_once _PS_MODULE_DIR_ . 'rklabels/classes/RkLockerLog.php';
 
 class RkLabelsApiModuleFrontController extends ModuleFrontController
 {
@@ -19,7 +15,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         
         header('Content-Type: application/json');
         
-        // Validate API key
         $apiKey = Tools::getValue('api_key');
         $storedKey = Configuration::get('RKLABELS_API_KEY');
         
@@ -42,48 +37,24 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
             case 'order':
                 $this->apiOrder();
                 break;
-            // Locker actions
-            case 'lockers':
-                $this->apiLockers();
-                break;
-            case 'locker_assign':
-                $this->apiLockerAssign();
-                break;
-            case 'locker_ready':
-                $this->apiLockerReady();
-                break;
-            case 'locker_collected':
-                $this->apiLockerCollected();
-                break;
-            case 'locker_status':
-                $this->apiLockerStatus();
-                break;
-            case 'locker_logs':
-                $this->apiLockerLogs();
-                break;
             default:
                 die(json_encode(['error' => 'Unknown action', 'success' => false]));
         }
     }
 
-    /**
-     * Get module status
-     */
     protected function apiStatus()
     {
         $pendingCount = $this->getPendingOrdersCount();
         
         die(json_encode([
             'success' => true,
-            'version' => '1.0.0',
+            'module' => 'rklabels',
+            'version' => '1.3.0',
             'pending_count' => $pendingCount,
             'timestamp' => date('c'),
         ]));
     }
 
-    /**
-     * Get pending orders
-     */
     protected function apiPending()
     {
         $orders = $this->getPendingOrders();
@@ -95,9 +66,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         ]));
     }
 
-    /**
-     * Get single order details
-     */
     protected function apiOrder()
     {
         $orderId = (int) Tools::getValue('id_order');
@@ -119,9 +87,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         ]));
     }
 
-    /**
-     * Mark orders as printed/shipped
-     */
     protected function apiPrint()
     {
         $ids = Tools::getValue('ids');
@@ -147,7 +112,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
             
             $label = $this->generateLabelData($order);
             
-            // Update order status if configured
             if (Configuration::get('RKLABELS_AUTO_STATUS')) {
                 $newStatus = (int) Configuration::get('RKLABELS_STATUS_SHIPPED');
                 if ($newStatus && $order->current_state != $newStatus) {
@@ -158,14 +122,9 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
                 }
             }
             
-            // Log the print
             PrestaShopLogger::addLog(
                 'Label printed via API for order #' . $orderId,
-                1,
-                null,
-                'Order',
-                $orderId,
-                true
+                1, null, 'Order', $orderId, true
             );
             
             $results[] = [
@@ -181,12 +140,8 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         ]));
     }
 
-    /**
-     * Get pending orders from database
-     */
     protected function getPendingOrders()
     {
-        // Order states: 2=Payment accepted, 3=Processing, 10=Awaiting payment, 11=Remote payment accepted
         $sql = '
             SELECT o.id_order, o.reference, o.date_add, o.total_paid,
                    CONCAT(a.firstname, " ", a.lastname) as recipient_name,
@@ -208,9 +163,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         return Db::getInstance()->executeS($sql);
     }
 
-    /**
-     * Get count of pending orders
-     */
     protected function getPendingOrdersCount()
     {
         $sql = '
@@ -223,9 +175,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         return (int) $result['cnt'];
     }
 
-    /**
-     * Generate label data for an order
-     */
     protected function generateLabelData(Order $order)
     {
         $address = new Address($order->id_address_delivery);
@@ -254,7 +203,6 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
             ],
         ];
         
-        // Add sender if configured
         if (Configuration::get('RKLABELS_SHOW_SENDER')) {
             $label['sender'] = [
                 'name' => Configuration::get('RKLABELS_SENDER_NAME'),
@@ -265,218 +213,5 @@ class RkLabelsApiModuleFrontController extends ModuleFrontController
         }
         
         return $label;
-    }
-
-    // ============================================
-    // LOCKER API ENDPOINTS
-    // ============================================
-
-    /**
-     * Get all lockers with current status
-     */
-    protected function apiLockers()
-    {
-        $lockers = RkLocker::getAllWithStatus();
-        $stats = [
-            'total' => count($lockers),
-            'available' => RkLocker::getAvailableCount(),
-            'occupied' => count($lockers) - RkLocker::getAvailableCount(),
-        ];
-
-        die(json_encode([
-            'success' => true,
-            'stats' => $stats,
-            'lockers' => $lockers,
-        ]));
-    }
-
-    /**
-     * Assign locker to order (round-robin)
-     */
-    protected function apiLockerAssign()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            die(json_encode(['error' => 'No order ID specified', 'success' => false]));
-        }
-        
-        $order = new Order($orderId);
-        if (!Validate::isLoadedObject($order)) {
-            die(json_encode(['error' => 'Order not found', 'success' => false]));
-        }
-        
-        $assignment = RkLockerAssignment::assignToOrder($orderId);
-        
-        if (!$assignment) {
-            die(json_encode([
-                'success' => false,
-                'error' => 'No lockers available',
-            ]));
-        }
-        
-        $locker = new RkLocker($assignment->id_locker);
-        
-        die(json_encode([
-            'success' => true,
-            'assignment' => [
-                'id_assignment' => $assignment->id,
-                'id_locker' => $assignment->id_locker,
-                'locker_name' => $locker->name,
-                'locker_location' => $locker->location,
-                'status' => $assignment->status,
-                'date_assigned' => $assignment->date_assigned,
-            ],
-        ]));
-    }
-
-    /**
-     * Mark locker as ready for pickup (keychain deposited)
-     */
-    protected function apiLockerReady()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        $pinCode = Tools::getValue('pin_code');
-        $validHours = (int) Tools::getValue('valid_hours', Configuration::get('RKLABELS_PIN_VALID_HOURS') ?: 72);
-        
-        if (!$orderId) {
-            die(json_encode(['error' => 'No order ID specified', 'success' => false]));
-        }
-        
-        $assignment = RkLockerAssignment::getByOrderId($orderId);
-        
-        if (!$assignment) {
-            die(json_encode(['error' => 'No locker assigned to this order', 'success' => false]));
-        }
-        
-        if (!$assignment->markReady($pinCode, $validHours)) {
-            die(json_encode(['error' => 'Failed to update assignment', 'success' => false]));
-        }
-        
-        die(json_encode([
-            'success' => true,
-            'message' => 'Locker marked as ready for pickup',
-            'assignment' => [
-                'id_assignment' => $assignment->id,
-                'status' => $assignment->status,
-                'pin_valid_until' => $assignment->pin_valid_until,
-            ],
-        ]));
-    }
-
-    /**
-     * Mark locker as collected (frees the locker)
-     */
-    protected function apiLockerCollected()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        $idLocker = (int) Tools::getValue('id_locker');
-        
-        // Find assignment by order or locker
-        if ($orderId) {
-            $assignment = RkLockerAssignment::getByOrderId($orderId);
-        } elseif ($idLocker) {
-            $assignment = RkLockerAssignment::getActiveByLockerId($idLocker);
-        } else {
-            die(json_encode(['error' => 'No order ID or locker ID specified', 'success' => false]));
-        }
-        
-        if (!$assignment) {
-            die(json_encode(['error' => 'No active assignment found', 'success' => false]));
-        }
-        
-        if (!$assignment->markCollected()) {
-            die(json_encode(['error' => 'Failed to update assignment', 'success' => false]));
-        }
-        
-        // Optionally update order status
-        $collectedStatus = (int) Configuration::get('RKLABELS_STATUS_COLLECTED');
-        if ($collectedStatus && $orderId) {
-            $order = new Order($assignment->id_order);
-            if ($order->current_state != $collectedStatus) {
-                $history = new OrderHistory();
-                $history->id_order = $order->id;
-                $history->changeIdOrderState($collectedStatus, $order, true);
-                $history->addWithemail(true);
-            }
-        }
-        
-        die(json_encode([
-            'success' => true,
-            'message' => 'Locker marked as collected',
-            'id_locker' => $assignment->id_locker,
-            'id_order' => $assignment->id_order,
-        ]));
-    }
-
-    /**
-     * Get locker status for a specific order
-     */
-    protected function apiLockerStatus()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        
-        if (!$orderId) {
-            die(json_encode(['error' => 'No order ID specified', 'success' => false]));
-        }
-        
-        $assignment = RkLockerAssignment::getByOrderId($orderId);
-        
-        if (!$assignment) {
-            die(json_encode([
-                'success' => true,
-                'has_locker' => false,
-                'assignment' => null,
-            ]));
-        }
-        
-        $locker = new RkLocker($assignment->id_locker);
-        
-        die(json_encode([
-            'success' => true,
-            'has_locker' => true,
-            'assignment' => [
-                'id_assignment' => $assignment->id,
-                'id_locker' => $assignment->id_locker,
-                'locker_name' => $locker->name,
-                'locker_location' => $locker->location,
-                'status' => $assignment->status,
-                'pin_code' => $assignment->pin_code,
-                'pin_valid_until' => $assignment->pin_valid_until,
-                'date_assigned' => $assignment->date_assigned,
-                'date_ready' => $assignment->date_ready,
-                'date_collected' => $assignment->date_collected,
-            ],
-        ]));
-    }
-
-    /**
-     * Get logs for order or locker
-     */
-    protected function apiLockerLogs()
-    {
-        $orderId = (int) Tools::getValue('id_order');
-        $idLocker = (int) Tools::getValue('id_locker');
-        $limit = (int) Tools::getValue('limit', 50);
-        
-        if ($orderId) {
-            $logs = RkLockerLog::getByOrderId($orderId, $limit);
-        } elseif ($idLocker) {
-            $logs = RkLockerLog::getByLockerId($idLocker, $limit);
-        } else {
-            $logs = RkLockerLog::getRecent($limit);
-        }
-        
-        // Add human-readable labels
-        foreach ($logs as &$log) {
-            $log['event_label'] = RkLockerLog::getEventLabel($log['event_type']);
-            $log['event_data_decoded'] = json_decode($log['event_data'], true);
-        }
-        
-        die(json_encode([
-            'success' => true,
-            'count' => count($logs),
-            'logs' => $logs,
-        ]));
     }
 }
